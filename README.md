@@ -194,8 +194,6 @@ smart-label-vocational-training-agent/
 │  └─ index.ts
 ├─ build/
 │  └─ sites-vite-plugin.ts
-├─ .openai/
-│  └─ hosting.json
 ├─ .env.example                 # 讯飞配置模板，可提交 GitHub
 ├─ .gitignore                   # 忽略真实密钥、依赖和构建产物
 ├─ package.json
