@@ -493,32 +493,8 @@ Local: http://localhost:xxxx/
 
 ---
 
-## 13. GitHub 安全检查
 
-上传前建议执行：
-
-```powershell
-git status
-git ls-files | Select-String ".env"
-```
-
-正常情况下 Git 追踪的环境配置只应该有：
-
-```text
-.env.example
-```
-
-**不应该出现：**
-
-```text
-.env.local
-```
-
-如真实密钥曾经被提交过，请立即在讯飞控制台更换 Key / Secret，并从 Git 历史中清理。
-
----
-
-## 14. 版本
+## 13. 版本
 
 ```text
 v1.0.0
