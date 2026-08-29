@@ -1,501 +1,284 @@
-# 智标实训｜AI 数据标注岗位技能智能体
+# 智标实训｜AI 数据标注岗位教学实训与技能评价智能体
 
-> **版本：v1.0.0**  
-> 面向职业教育人工智能技术应用专业群，服务 **AI 数据标注工程师** 岗位教学、实训、评价与教师诊断。
+- 赛题编号：XA-202603
+- 作品版本：v1.0
+- 专业群：人工智能技术应用专业群
+- 典型岗位：AI 数据标注工程师
+- 智能体平台：讯飞星辰 Agent
+- 核心模型：Spark X2
+- MVP 技术栈：Next.js / React / TypeScript / Vite / Vinext
+- 项目仓库：https://github.com/qianmu233/smart-label-vocational-training-agent
 
 ![智标实训项目概览](public/og.png)
 
-## 1. 项目简介
 
-**智标实训（AI 数据标注岗位教学实训与技能评价智能体）** 是一套由 **科大讯飞星辰 Agent 工作流 + 本地 Web 教学实训平台** 共同组成的职业教育智能体应用。
+## Agent 入口
 
-项目围绕 AI 数据标注工程师岗位，将文本标注、结构化抽取、图像标注、OCR、音频标注和视频标注等典型工作任务转化为可直接用于课堂教学与岗位训练的学习型任务，并形成完整闭环：
+- 在线体验：https://agent.xfyun.cn/agentbuilder/chat?sharekey=cdc41d7a813c18bc488ba4e3eb538f6c&botId=5788331
+- BotID：`5788331`
+- FlowID：`7489975261462114304`
+- 绑定 APPID：`d60ef5f6`
+- Workflow API：`https://xingchen-api.xf-yun.com/workflow/v1/chat/completions`
+- 核心模型：Spark X2
 
-```text
-课程导航
-→ 规则教学
-→ Agent 正式出题
-→ 学生提交答案
-→ 自动评分
-→ 错误复盘
-→ 类别递进
-→ 教师教学诊断
-```
+## 1. 版本说明
 
-项目对应赛题：
+本包为源码复现版，用于代码审查、技术复现和二次开发。
 
-- **赛题编号：XA-202603**
-- **赛题名称：面向职业教育高水平专业群建设的教学实训与岗位技能智能体开发**
-- **作品名称：AI 数据标注岗位教学实训与技能评价智能体**
+本包包含：
 
----
+- 完整 MVP 源码
+- 三个核心 API
+- 依赖锁文件
+- Windows 启动脚本
+- 环境变量模板
+- 学生端与教师端实现
+- 教学追问、实训辅导和评分诊断逻辑
 
-## 2. 核心功能
+本包不包含：
 
-### 2.1 学生端
+- `node_modules`
+- Windows 免安装 Node.js 运行时
 
-- 课程路线与岗位能力导航
-- 规则教学与教师示范
-- Agent 正式出题
-- 规范化 JSON 作答
-- 自动评分与错误复盘
-- 学习进度跟踪
-- 训练历史记录
-- 多模态标注实训
-- 学习辅助与自由问答
+直接体验请使用 `02-作品 Demo` 中的 Windows x64 免安装版。
 
-### 2.2 教师端
-
-- 学生训练记录查看
-- 平均得分与训练次数统计
-- 题型分布
-- 共性错误分析
-- 高频薄弱知识点
-- 教学建议
-- 学生管理
-
-### 2.3 教学闭环
+## 2. 技术架构
 
 ```text
-岗位认知
-→ 学习规则
-→ 查看示范
-→ 完成实训
-→ 提交答案
-→ 自动评分
-→ 错误复盘
-→ 类别递进
-→ 模块结业
+Next.js / React / TypeScript
+        ↓
+/api/guide  /api/task  /api/evaluate
+        ↓
+讯飞星辰 Agent
+        ↓
+Spark X2 + Python / 规则节点
+        ↓
+题库 / 标准答案 / 评分代码 / 课程状态
 ```
 
----
+Spark X2 负责语义理解、教学交互、连续追问和反馈组织；Python / 规则节点负责答案解析、标准答案匹配、评分和课程状态；MVP 负责学生端、教师端和 API 交互。
 
-## 3. 课程体系：5 个模块、22 类任务
+## 3. 面向赛题答题要求的实现
 
-### MODULE-01｜文字基础标注（5 类）
+### 专业内容
 
-1. NER 命名实体识别
-2. 新闻主题分类
-3. 情感极性分类
-4. 用户意图分类
-5. 风险文本识别
+5 个模块、22 类岗位任务均具有明确的任务目标、标签或字段、提交格式、标准答案和错误反馈。
 
-### MODULE-02｜结构化文本抽取（3 类）
+### 专业知识依据
 
-6. 实体关系抽取
-7. 事件要素抽取
-8. 文本匹配与语义关系
-
-### MODULE-03｜图像与 OCR（7 类）
-
-9. 图片分类
-10. 目标检测
-11. 图像语义分割
-12. 车道线折线标注
-13. 可行驶区域多边形标注
-14. OCR 文字转写
-15. OCR 版面结构标注
-
-### MODULE-04｜音频与语音（5 类）
-
-16. ESC-10 基础声音分类
-17. ESC-50 环境声音分类
-18. AudioSet 人声分类
-19. 视频语音环境分类
-20. 语音时间边界标注
-
-### MODULE-05｜视频动作（2 类）
-
-21. 视频动作分类
-22. 视频动作片段标注
-
----
-
-## 4. 技术架构
-
-### 4.1 技术栈
-
-| 层级 | 技术 |
-| --- | --- |
-| 前端 | React 19、Next.js 16、TypeScript |
-| 本地构建与运行 | Vinext、Vite、pnpm |
-| 智能体 | 科大讯飞星辰 Agent |
-| 智能编排 | Workflow、提示词、代码节点、题库与评分逻辑 |
-| 服务端接口 | Next.js Route Handlers |
-| 学习记录 | 浏览器 localStorage |
-| Agent 接口 | 科大讯飞星辰 Workflow API |
-
-### 4.2 调用架构
+教学内容结合：
 
 ```text
-学生端 / 教师端
-        │
-        ▼
-智标实训 Web 平台
-        │
-        ├── /api/task       正式出题
-        ├── /api/guide      教学与学习辅助
-        └── /api/evaluate   答案评分
-        │
-        ▼
-科大讯飞星辰 Workflow API
-        │
-        ▼
-任务路由 / 题库 / 规则 / 评分 / 课程进度
+题库规则
++ 标准答案
++ 标签体系
++ 官方数据集资料
++ 标注工具官方文档
++ 教程资源
 ```
 
-### 4.3 Agent 与 MVP 的职责划分
-
-**科大讯飞星辰 Agent：**
-
-- 用户意图识别
-- 教学导航
-- 任务路由
-- 正式题生成
-- 规则讲解
-- 标准答案查询
-- 自动评分
-- 错误复盘
-- 类别与模块递进
-
-**MVP Web 平台：**
-
-- 学生端 / 教师端入口
-- 多学生管理
-- 22 类任务导航
-- 学习辅助与正式实训工作区
-- 答案输入
-- 评分结果可视化
-- 学生历史记录
-- 教师诊断
-- 加载进度与超时提示
-
----
-
-## 5. 项目目录
+### 模糊提问与连续追问
 
 ```text
-smart-label-vocational-training-agent/
-├─ app/
-│  ├─ api/
-│  │  ├─ task/route.ts          # Agent 正式出题接口
-│  │  ├─ guide/route.ts         # 教学与学习辅助接口
-│  │  ├─ evaluate/route.ts      # 答案评分接口
-│  │  └─ xfyun.ts               # 科大讯飞 Workflow API 封装
-│  ├─ learning-studio.tsx       # 学生端/教师端主要交互页面
-│  ├─ data.ts                   # 页面数据与任务配置
-│  ├─ globals.css               # 全局样式
-│  ├─ layout.tsx
-│  └─ page.tsx
-├─ public/
-│  ├─ favicon.svg
-│  └─ og.png
-├─ worker/
-│  └─ index.ts
-├─ build/
-│  └─ sites-vite-plugin.ts
-├─ .env.example                 # 讯飞配置模板，可提交 GitHub
-├─ .gitignore                   # 忽略真实密钥、依赖和构建产物
-├─ package.json
-├─ pnpm-lock.yaml
-├─ vite.config.ts
-├─ next.config.ts
-├─ tsconfig.json
-├─ 启动智标实训平台.cmd          # Windows 中文一键启动
-├─ start-smart-label-platform.cmd
-├─ start-smart-label-platform.ps1
-├─ GITHUB_UPLOAD_GUIDE.md
-└─ README.md
+guideChatId
+→ 通用教学和规则学习
+
+practiceHelpChatId
+→ 当前正式题辅导和评分后复盘
 ```
 
-> GitHub 仓库中 **不包含 `.env.local`、`node_modules`、构建缓存以及任何真实 API 密钥**。
+两类场景均支持最近 3 轮上下文。
 
----
+### 技能评价
 
-## 6. 科大讯飞密钥配置
+```text
+question_id + task_type
+→ 标准答案
+→ 任务评分器
+→ 结构化评分
+→ Spark X2 错误复盘
+```
 
-### 6.1 配置文件位置
+正式得分不由生成模型自由决定。
 
-仓库只提交：
+### 教师诊断
+
+训练记录用于生成班级共性诊断与学生个体诊断。
+
+## 4. 技术栈
+
+```text
+Next.js 16.2.6
+React 19
+TypeScript
+Vite 8.0.13
+Vinext 0.0.50
+pnpm 10.12.4
+讯飞星辰 Agent
+Spark X2
+```
+
+Node.js：
+
+```text
+Node.js >= 22.13.0
+```
+
+## 5. 环境配置
+
+复制：
 
 ```text
 .env.example
 ```
 
-真实运行配置使用：
+为：
 
 ```text
 .env.local
 ```
 
-`.env.local` 已被 `.gitignore` 忽略，**不要提交到 GitHub**。
+填写自己的讯飞星辰工作流配置。
 
-### 6.2 首次启动自动创建配置文件
+公开源码不提交真实 `.env.local`。
 
-第一次双击：
+## 6. 标准复现
 
-```text
-启动智标实训平台.cmd
+安装依赖：
+
+```bash
+pnpm install --frozen-lockfile
 ```
 
-如果项目根目录不存在 `.env.local`，启动程序会：
+启动：
 
-1. 从 `.env.example` 自动复制生成 `.env.local`；
-2. 尝试使用记事本打开 `.env.local`；
-3. 提示填写科大讯飞配置；
-4. 保存后重新运行启动脚本。
-
-也可以手工执行：
-
-```powershell
-Copy-Item .env.example .env.local
+```bash
+pnpm dev
 ```
 
-### 6.3 填写内容
-
-打开项目根目录的：
-
-```text
-.env.local
-```
-
-填写：
-
-```dotenv
-XFYUN_API_URL=https://xingchen-api.xf-yun.com/workflow/v1/chat/completions
-XFYUN_API_KEY=
-XFYUN_API_SECRET=
-XFYUN_FLOW_ID=
-```
-
-请把空值替换为**你自己的科大讯飞星辰应用/工作流凭据**。
-
-### 6.4 各字段含义
-
-| 配置项 | 说明 |
-| --- | --- |
-| `XFYUN_API_URL` | 科大讯飞星辰 Workflow API 地址，通常无需修改 |
-| `XFYUN_API_KEY` | 你的讯飞 API Key |
-| `XFYUN_API_SECRET` | 你的讯飞 API Secret |
-| `XFYUN_FLOW_ID` | 已发布工作流的 Flow ID |
-
-> **安全要求：** 不要在 README、源码、截图、Issue、Commit 或 GitHub Actions 日志中暴露真实 API Key / Secret。
-
----
-
-## 7. Windows 一键启动
-
-### 7.1 推荐方式
-
-完整解压或 `git clone` 后，双击：
-
-```text
-启动智标实训平台.cmd
-```
-
-启动脚本会自动完成：
-
-1. 检查 Node.js 版本；
-2. 若未安装 Node.js，则优先尝试 `winget` 自动安装 Node.js LTS；
-3. `winget` 不可用时，尝试使用 PowerShell 下载便携版 Node.js；
-4. 检查 Windows 路径长度，必要时复制到本机短路径运行；
-5. 首次运行自动安装 pnpm 和项目依赖；
-6. 启动 Vinext / Vite 本地开发服务；
-7. 服务就绪后自动打开浏览器。
-
-默认地址：
+浏览器访问：
 
 ```text
 http://localhost:3000/
 ```
 
-如果 3000 端口被占用，以命令窗口输出的 `Local` 地址为准。
+Windows 用户也可以直接双击：
 
-### 7.2 环境要求
-
-推荐：
-
-- Windows 10 / Windows 11
-- Chrome / Edge
-- 可访问互联网
-- Node.js 22.13+（未安装时启动脚本会尝试自动准备）
-
-### 7.3 手工启动
-
-如果已经安装 Node.js：
-
-```powershell
-npx --yes pnpm@10.12.4 install --frozen-lockfile
-npx --yes pnpm@10.12.4 dev
+```text
+启动智标实训平台.cmd
 ```
 
-构建：
+启动脚本会检查本地 Node.js 与项目依赖，并在需要时准备运行缓存。
 
-```powershell
-npx --yes pnpm@10.12.4 build
+## 7. 代码结构
+
+```text
+app/
+├─ learning-studio.tsx
+├─ data.ts
+├─ globals.css
+└─ api/
+   ├─ guide/route.ts
+   ├─ task/route.ts
+   └─ evaluate/route.ts
+
+public/
+worker/
+build/
+bootstrap/
+
+package.json
+pnpm-lock.yaml
+vite.config.ts
+next.config.ts
+tsconfig.json
 ```
 
-代码检查：
+## 8. API
 
-```powershell
-npx --yes pnpm@10.12.4 lint
-```
+### `/api/guide`
 
----
-
-## 8. 平台操作方法
-
-### 8.1 学生端
-
-1. 打开 MVP；
-2. 选择“学生端”；
-3. 选择已有学生或创建新学生；
-4. 首次进入建议点击“开始教学”；
-5. 学习课程路线和作答规范；
-6. 在左侧选择规则教学或岗位实训；
-7. 选择具体任务类别；
-8. 等待 Agent 返回正式题；
-9. 按题面 JSON 模板填写答案；
-10. 点击“提交并生成结果分析”；
-11. 查看 `RESULT SUMMARY`、评分结果和错误复盘；
-12. 根据系统建议继续巩固或进入下一类别。
-
-### 8.2 教师端
-
-教师端可查看：
-
-- 学生训练次数
-- 平均得分
-- 各类任务训练分布
-- 训练详情
-- 共性错误
-- 薄弱知识点
-- 教学建议
-- 学生管理
-
----
-
-## 9. 主要 API
-
-### `POST /api/task`
-
-用途：
-
-- 请求 Agent 正式题
-- 返回题号、任务内容、作答模板和课程进度信息
-
-### `POST /api/guide`
-
-用途：
+用于：
 
 - 开始教学
-- 学习规则
-- 资源推荐
-- 学习辅助
-- 自由标注指导
+- 规则学习
+- 自由问答
+- 连续追问
+- 正式题辅导
+- 评分解释
 
-### `POST /api/evaluate`
+### `/api/task`
 
-用途：
+用于：
 
-- 提交学生答案
-- 调用 Agent 自动评分
-- 返回分数、正确项、漏标、多标、类别混淆和课程进度
+- 正式出题
+- 题号解析
+- 记录 ID 解析
+- 正式题结果校验
+- 答案模板返回
 
-多模态评分可能耗时较长，当前服务端 Agent 请求允许最长约 **180 秒**，前端会显示加载进度和等待状态。
+### `/api/evaluate`
 
----
+用于：
 
-## 10. 本地数据说明
+- 正式答案提交
+- 评分调用
+- 结构化评分结果解析
+- 错误复盘
+- 课程进度更新
 
-学生训练记录主要保存在浏览器：
+## 9. 正式评分
 
-```text
-localStorage
-```
-
-特点：
-
-- 无需单独安装数据库；
-- 适合比赛演示、教学 Demo 和单机实训；
-- 换浏览器或清空浏览器数据后，本地训练记录会重置。
-
-如果用于正式教学部署，可进一步接入 MySQL / PostgreSQL 等持久化数据库。
-
----
-
-## 11. 数据安全与 AI 内容说明
-
-本项目遵循以下原则：
-
-- 不使用未经授权、未经脱敏的真实个人敏感数据；
-- 示例数据主要使用公开、人工构造或匿名化数据；
-- 不生成或传播虚假学术数据、虚假文献及违反科研诚信的内容；
-- 系统生成结果属于 AI 辅助内容；
-- 教学建议与自动评价用于教学辅助，不替代教师最终判断；
-- API Key / Secret 仅保存在本地 `.env.local`。
-
----
-
-## 12. 常见问题
-
-### Q1：启动后提示“讯飞 Agent API 尚未完成本地配置”
-
-检查：
+评分流程：
 
 ```text
-.env.local
+学生答案
+→ 格式解析
+→ question_id / task_type 校验
+→ 标准答案读取
+→ 对应任务评分器
+→ 错误类型识别
+→ 分数计算
+→ Spark X2 组织反馈
 ```
 
-确认以下三项已经填写：
+## 10. 课程与递进
 
-```dotenv
-XFYUN_API_KEY=
-XFYUN_API_SECRET=
-XFYUN_FLOW_ID=
-```
+课程共 5 个模块、22 类任务。
 
-保存后重新启动平台。
+单类别达标条件：
 
-### Q2：没有安装 Node.js 怎么办？
+1. 至少完成 2 道不同正式题
+2. 至少 1 道得分达到 80 分
+3. 有效答题平均分达到 80 分
+4. 最近一次评分格式有效
 
-无需必须手工安装。Windows 启动脚本会：
+模块内全部类别完成后，再推荐进入下一模块。
 
-1. 优先尝试 `winget`；
-2. 失败后尝试 PowerShell 便携版 Node.js；
-3. 两种方式均失败才提示手工安装 Node.js LTS。
+## 11. 学生端与教师端
 
-### Q3：项目路径很长，Vite 一直不启动怎么办？
+学生端：
 
-启动程序会自动检测长路径，并在必要时使用：
+- 课程导航
+- 规则学习
+- 正式出题
+- “问一问 Agent”
+- 答案提交
+- 自动评分
+- 评分后连续追问
+- 历史结果查看
 
-```text
-%LOCALAPPDATA%
-```
+教师端：
 
-下的短路径运行副本。
+- 班级共性诊断
+- 学生个体诊断
+- 平均分
+- 达标率
+- 高频错误
+- 薄弱任务
+- 近期趋势
+- 后续教学建议
 
-### Q4：浏览器没有自动打开怎么办？
+公开 GitHub：
 
-查看启动窗口中的：
-
-```text
-Local: http://localhost:xxxx/
-```
-
-手工复制到浏览器即可。
-
-### Q5：多模态评分等待时间较长是否正常？
-
-图片、OCR、音频、视频等任务经过 Agent Workflow 时，耗时可能高于纯文本任务。前端会显示加载进度，服务端也设置了较长的请求等待时间。
-
----
-
-
-## 13. 版本
-
-```text
-v1.0.0
-```
-
-该版本用于职业教育 AI 数据标注岗位教学实训与技能评价 MVP 演示、评审与源码展示。
+https://github.com/qianmu233/smart-label-vocational-training-agent
