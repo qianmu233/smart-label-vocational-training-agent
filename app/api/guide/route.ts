@@ -9,6 +9,7 @@ export async function POST(request: Request) {
     toolId?: string;
     taskId?: string;
     query?: string;
+    chatId?: string;
   };
   const tool = LEARNING_TOOLS.find((item) => item.id === body.toolId);
   const task = TASKS.find((item) => item.id === body.taskId);
@@ -18,6 +19,7 @@ export async function POST(request: Request) {
   }
 
   const query = body.query?.trim().slice(0, 2000) ?? "";
+  const chatId = body.chatId?.trim() || crypto.randomUUID().replace(/-/g, "");
   const isGlobalGuide = tool.id === "start-teaching" || tool.id === "navigation";
   const userInput = [
     tool.command,
@@ -27,14 +29,14 @@ export async function POST(request: Request) {
 
   try {
     const result = await callXfyunAgent(userInput, {
-      chatId: crypto.randomUUID().replace(/-/g, ""),
+      chatId,
       parameters: {
         INPUT_FILE_NOTE: query,
         OUTPUT_MODE: "chat",
         COURSE_PROGRESS_JSON: "",
       },
     });
-    return NextResponse.json({ content: result.content, toolTitle: tool.title });
+    return NextResponse.json({ content: result.content, toolTitle: tool.title, chatId });
   } catch (error) {
     return NextResponse.json(
       { message: error instanceof Error ? error.message : "学习辅助功能暂时不可用" },

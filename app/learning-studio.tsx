@@ -130,13 +130,13 @@ async function requestAgentTask(
   return payload;
 }
 
-async function requestLearningGuide(toolId: string, taskId: string, query: string) {
+async function requestLearningGuide(toolId: string, taskId: string, query: string, chatId = "") {
   const response = await fetch("/api/guide", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ toolId, taskId, query }),
+    body: JSON.stringify({ toolId, taskId, query, chatId }),
   });
-  const payload = (await response.json()) as { content?: string; toolTitle?: string; message?: string };
+  const payload = (await response.json()) as { content?: string; toolTitle?: string; chatId?: string; message?: string };
   if (!response.ok) throw new Error(payload.message || "学习辅助服务暂时不可用");
   return payload;
 }
@@ -152,6 +152,26 @@ function cleanQuestionRequirements(value: string) {
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function LinkifiedGuideText({ value }: { value: string }) {
+  const cleaned = cleanQuestionRequirements(value);
+  const parts = cleaned.split(/(https?:\/\/[^\s]+)/g);
+  return (
+    <div className="guide-rich-text">
+      {parts.map((part, index) => {
+        if (!/^https?:\/\//i.test(part)) return <span key={`${index}-${part.slice(0, 12)}`}>{part}</span>;
+        const match = part.match(/^(.*?)([，。；、！？）》】"'']*)$/);
+        const url = match?.[1] ?? part;
+        const punctuation = match?.[2] ?? "";
+        return (
+          <span key={`${index}-${url}`}>
+            <a href={url} target="_blank" rel="noreferrer">{url}</a>{punctuation}
+          </span>
+        );
+      })}
+    </div>
+  );
 }
 
 function firstMediaUrl(value: string) {
@@ -288,6 +308,7 @@ export function LearningStudio() {
   const [role, setRole] = useState<"student" | "teacher">("student");
   const [studentPage, setStudentPage] = useState<"practice" | "results">("practice");
   const [teacherInsight, setTeacherInsight] = useState<"records" | "errors" | "weakness" | "advice">("records");
+  const [teacherScopeStudentId, setTeacherScopeStudentId] = useState<string>("all");
   const [roleMenuOpen, setRoleMenuOpen] = useState(false);
   const [taskId, setTaskId] = useState(TASKS[0].id);
   const [answer, setAnswer] = useState("");
@@ -317,10 +338,18 @@ export function LearningStudio() {
   const [newStudentNo, setNewStudentNo] = useState("");
   const [newStudentClass, setNewStudentClass] = useState("");
   const [guideInput, setGuideInput] = useState("");
+  const [guideFollowupInput, setGuideFollowupInput] = useState("");
+  const [guideChatId, setGuideChatId] = useState("");
   const [guideResponse, setGuideResponse] = useState("");
   const [guideTitle, setGuideTitle] = useState("");
   const [guideLoadingId, setGuideLoadingId] = useState("");
   const [guideError, setGuideError] = useState("");
+  const [practiceHelpChatId, setPracticeHelpChatId] = useState("");
+  const [practiceHelpInput, setPracticeHelpInput] = useState("");
+  const [practiceHelpResponse, setPracticeHelpResponse] = useState("");
+  const [practiceHelpLoading, setPracticeHelpLoading] = useState(false);
+  const [practiceHelpError, setPracticeHelpError] = useState("");
+  const [practiceHelpPlacement, setPracticeHelpPlacement] = useState<"question" | "result" | null>(null);
   const [studentWorkspaceMode, setStudentWorkspaceMode] = useState<"learning" | "practice">("learning");
   const [selectedLearningToolId, setSelectedLearningToolId] = useState("start-teaching");
   const [autoTeachingPending, setAutoTeachingPending] = useState(false);
@@ -482,6 +511,31 @@ export function LearningStudio() {
     });
   }, [activeStudent, records]);
 
+  const teacherScopeStudent = teacherScopeStudentId === "all"
+    ? null
+    : students.find((item) => item.id === teacherScopeStudentId) ?? null;
+
+  const teacherScopedRecords = useMemo(() => {
+    if (!teacherScopeStudent) return records;
+    return records.filter((record) => {
+      if (record.studentId) return record.studentId === teacherScopeStudent.id;
+      return (record.studentName?.trim() || DEFAULT_STUDENTS[0].name) === teacherScopeStudent.name;
+    });
+  }, [records, teacherScopeStudent]);
+
+  const teacherMetrics = useMemo(() => {
+    const scores = teacherScopedRecords
+      .map((item) => item.evaluation.score)
+      .filter((score): score is number => typeof score === "number");
+    const passed = scores.filter((score) => score >= 80).length;
+    return {
+      total: teacherScopedRecords.length,
+      average: scores.length ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length) : 0,
+      passed,
+      passRate: scores.length ? Math.round((passed / scores.length) * 100) : 0,
+    };
+  }, [teacherScopedRecords]);
+
   const metrics = useMemo(() => {
     const total = records.length;
     const scores = records
@@ -510,33 +564,68 @@ export function LearningStudio() {
       { label: "格式问题", count: 0 },
       { label: "边界或类别错误", count: 0 },
     ];
-    records.forEach((record) => {
-      const text = [
-        ...record.evaluation.improvements,
-        ...record.evaluation.missingPoints,
-        ...(record.evaluation.analysis?.answerChecks.map((item) => `${item.status}${item.item}${item.detail}`) ?? []),
-      ].join(" ");
-      if (/漏标|遗漏/.test(text)) categories[0].count += 1;
-      if (/多标|误标/.test(text)) categories[1].count += 1;
-      if (/格式|分隔符|题目编号/.test(text)) categories[2].count += 1;
-      if (/边界|类别|类型|标签/.test(text)) categories[3].count += 1;
+
+    const classifyProblem = (value: string, found: Set<string>) => {
+      const text = value.trim();
+      if (!text) return;
+
+      // 排除“未发现错误 / 没有漏标 / 无类别错误”等否定性正常反馈。
+      if (
+        /未发现.*(?:漏标|多标|误标|错误)|没有.*(?:漏标|多标|误标|错误)|无(?:明显|集中|相关)?.*(?:漏标|多标|误标|错误)/.test(text)
+      ) {
+        return;
+      }
+
+      if (/漏标|遗漏/.test(text)) found.add("漏标");
+      if (/多标|误标/.test(text)) found.add("多标或误标");
+      if (/格式|分隔符|题目编号|JSON.*(?:错误|无效)|无法解析/.test(text)) found.add("格式问题");
+      if (/边界|类别错误|类型错误|标签错误|类别混淆|类型混淆/.test(text)) found.add("边界或类别错误");
+    };
+
+    teacherScopedRecords.forEach((record) => {
+      const found = new Set<string>();
+      const checks = record.evaluation.analysis?.answerChecks ?? [];
+
+      if (checks.length) {
+        // 优先使用 Agent 返回的结构化检查状态，避免从自然语言里猜测错误。
+        checks.forEach((check) => {
+          if (check.status === "正确") return;
+          if (check.status === "漏标") found.add("漏标");
+          else if (check.status === "多标") found.add("多标或误标");
+          else classifyProblem(`${check.status} ${check.item} ${check.detail}`, found);
+        });
+      } else {
+        // 兼容少数没有 answerChecks 的历史记录。
+        const score = record.evaluation.score;
+        if (!(score === 100 && record.evaluation.missingPoints.length === 0)) {
+          [...record.evaluation.missingPoints, ...record.evaluation.improvements]
+            .forEach((item) => classifyProblem(item, found));
+        }
+      }
+
+      categories.forEach((category) => {
+        if (found.has(category.label)) category.count += 1;
+      });
     });
+
     return categories;
-  }, [records]);
+  }, [teacherScopedRecords]);
 
   const weaknessStats = useMemo(() => {
     const counts = new Map<string, number>();
-    records.forEach((record) => {
+    teacherScopedRecords.forEach((record) => {
       record.evaluation.missingPoints.forEach((point) => counts.set(point, (counts.get(point) ?? 0) + 1));
     });
     return [...counts.entries()]
       .sort((a, b) => b[1] - a[1])
       .slice(0, 6)
       .map(([label, count]) => ({ label, count }));
-  }, [records]);
+  }, [teacherScopedRecords]);
 
   const studentRecordGroups = useMemo(() => {
-    return students.map((profile) => {
+    return students
+      .filter((profile) => teacherScopeStudentId === "all" || profile.id === teacherScopeStudentId)
+      .map((profile) => {
       const studentRecords = records.filter((record) => {
         if (record.studentId) return record.studentId === profile.id;
         return (record.studentName?.trim() || DEFAULT_STUDENTS[0].name) === profile.name;
@@ -553,9 +642,100 @@ export function LearningStudio() {
         average: scores.length ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length) : 0,
       };
     });
-  }, [records, students]);
+  }, [records, students, teacherScopeStudentId]);
+
+  const teacherDiagnosis = useMemo(() => {
+    if (!teacherScopeStudent) return null;
+
+    const scores = teacherScopedRecords
+      .map((record) => record.evaluation.score)
+      .filter((score): score is number => typeof score === "number");
+
+    if (!teacherScopedRecords.length || !scores.length) {
+      return {
+        level: "待开始训练",
+        summary: `${teacherScopeStudent.name}暂无有效训练记录，建议先完成规则学习和首轮正式训练。`,
+        topError: "暂无",
+        topWeakness: "暂无",
+        weakestTask: "暂无",
+        trend: "暂无趋势数据",
+        actions: [
+          "先完成 1～2 道基础任务，建立首轮学习基线。",
+          "从当前课程推荐任务开始，完成规则学习后再进入正式实训。",
+          "首次评分后根据漏标、多标、格式和类别错误安排针对性复练。",
+        ],
+      };
+    }
+
+    const average = Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length);
+    const level = average >= 90 ? "掌握稳定" : average >= 80 ? "达到课程要求" : average >= 70 ? "需要巩固" : "重点补强";
+
+    const taskMap = new Map<string, { sum: number; count: number }>();
+    teacherScopedRecords.forEach((record) => {
+      const score = record.evaluation.score;
+      if (typeof score !== "number") return;
+      const current = taskMap.get(record.taskTitle) ?? { sum: 0, count: 0 };
+      current.sum += score;
+      current.count += 1;
+      taskMap.set(record.taskTitle, current);
+    });
+    const weakestTaskCandidate = [...taskMap.entries()]
+      .map(([label, value]) => ({ label, average: Math.round(value.sum / value.count) }))
+      .sort((a, b) => a.average - b.average)[0];
+    const weakestTaskEntry =
+      weakestTaskCandidate && weakestTaskCandidate.average < 80 ? weakestTaskCandidate : undefined;
+
+    const topErrorItem = [...errorStats]
+      .filter((item) => item.count > 0)
+      .sort((a, b) => b.count - a.count)[0];
+    const topWeaknessItem = weaknessStats[0];
+
+    const chronological = [...teacherScopedRecords]
+      .filter((record) => typeof record.evaluation.score === "number")
+      .sort((a, b) => new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime());
+    const latest = chronological[chronological.length - 1]?.evaluation.score;
+    const previous = chronological[chronological.length - 2]?.evaluation.score;
+
+    let trend = "仅有一次有效评分，暂不足以判断趋势";
+    if (typeof latest === "number" && typeof previous === "number") {
+      const delta = latest - previous;
+      trend = delta > 0 ? `最近一次较上一次提升 ${delta} 分`
+        : delta < 0 ? `最近一次较上一次下降 ${Math.abs(delta)} 分`
+        : "最近两次得分持平";
+    }
+
+    const topError = topErrorItem?.count ? `${topErrorItem.label}（${topErrorItem.count} 次）` : "未形成明显高频错误";
+    const topWeakness = topWeaknessItem?.label ?? "暂无集中薄弱知识点";
+    const weakestTask = weakestTaskEntry ? `${weakestTaskEntry.label}（平均 ${weakestTaskEntry.average} 分）` : "暂无";
+
+    const actions = [
+      topWeaknessItem
+        ? `围绕“${topWeaknessItem.label}”安排规则复习与 2 道同类巩固题。`
+        : "保持当前训练节奏，继续积累不同任务类型的有效记录。",
+      topErrorItem?.count
+        ? `提交前重点检查“${topErrorItem.label}”，按题目模板逐项自检后再提交。`
+        : "继续保持规范化提交，重点检查标签边界、证据和字段完整性。",
+      weakestTaskEntry
+        ? `优先复练“${weakestTaskEntry.label}”，目标是连续两次达到 80 分以上。`
+        : "当前暂无明显弱项任务，可按课程推荐继续下一道题或下一类别。",
+      average >= 80
+        ? "当前总体达到课程达标线，可在保持准确率的同时增加相邻任务类型训练。"
+        : "当前平均分尚未达到 80 分，建议先完成补强与复测，再进入下一类别。",
+    ];
+
+    return {
+      level,
+      summary: `${teacherScopeStudent.name}已完成 ${teacherScopedRecords.length} 次训练，平均 ${average} 分，通过率 ${teacherMetrics.passRate}%。${trend}。`,
+      topError,
+      topWeakness,
+      weakestTask,
+      trend,
+      actions,
+    };
+  }, [teacherScopeStudent, teacherScopedRecords, errorStats, weaknessStats, teacherMetrics.passRate]);
 
   const selectedRecord = records.find((item) => item.id === selectedRecordId) ?? records[0];
+  const teacherSelectedRecord = teacherScopedRecords.find((item) => item.id === selectedRecordId) ?? teacherScopedRecords[0];
   const selectedStudentRecord = currentStudentRecords.find((item) => item.id === selectedRecordId) ?? currentStudentRecords[0];
   const maxErrorCount = Math.max(1, ...errorStats.map((item) => item.count));
   const maxWeaknessCount = Math.max(1, ...weaknessStats.map((item) => item.count));
@@ -570,6 +750,9 @@ export function LearningStudio() {
     setTaskWarning(null);
     setStudentPage("practice");
     setSelectedRecordId("");
+    setGuideChatId("");
+    setGuideFollowupInput("");
+    resetPracticeHelpConversation();
     setRoleMenuOpen(false);
     window.localStorage.setItem("smart-label-active-student-v1", studentId);
     window.localStorage.setItem(STUDENT_NAME_KEY, profile.name);
@@ -607,6 +790,7 @@ export function LearningStudio() {
     setTaskWarning(null);
     setStudentPage("practice");
     setSelectedRecordId("");
+    resetPracticeHelpConversation();
     setRoleMenuOpen(false);
     window.localStorage.setItem(STUDENTS_KEY, JSON.stringify(nextStudents));
     window.localStorage.setItem("smart-label-active-student-v1", nextProfile.id);
@@ -617,9 +801,12 @@ export function LearningStudio() {
       setStudentWorkspaceMode("learning");
       setSelectedLearningToolId("start-teaching");
       setGuideInput("");
+      setGuideFollowupInput("");
+      setGuideChatId("");
       setGuideResponse("");
       setGuideTitle("开始教学");
       setGuideError("");
+      resetPracticeHelpConversation();
       setLoadingTask(false);
       setAutoTeachingPending(true);
     }
@@ -640,6 +827,8 @@ export function LearningStudio() {
     setStudentWorkspaceMode("learning");
     setSelectedLearningToolId("start-teaching");
     setGuideInput("");
+    setGuideFollowupInput("");
+    setGuideChatId("");
     setGuideResponse("");
     setGuideTitle("开始教学");
     setGuideError("");
@@ -665,6 +854,7 @@ export function LearningStudio() {
     const nextRecords = records.filter((record) => !relatedIds.has(record.id));
     setStudents(nextStudents);
     setRecords(nextRecords);
+    if (teacherScopeStudentId === studentId) setTeacherScopeStudentId("all");
     setSelectedRecordId(nextRecords[0]?.id ?? "");
     window.localStorage.setItem(STUDENTS_KEY, JSON.stringify(nextStudents));
     window.localStorage.setItem(RECORDS_KEY, JSON.stringify(nextRecords));
@@ -693,6 +883,7 @@ export function LearningStudio() {
     setEvaluation(null);
     setResultNotice("");
     setShowHint(false);
+    resetPracticeHelpConversation();
   };
 
   const generateAgentQuestion = async () => {
@@ -703,6 +894,7 @@ export function LearningStudio() {
     setEvaluation(null);
     setResultNotice("");
     setShowHint(false);
+    resetPracticeHelpConversation();
     try {
       const result = await requestAgentTask(task.id, true, {
         question,
@@ -726,22 +918,97 @@ export function LearningStudio() {
     }
   };
 
-  const runLearningTool = async (toolId: string) => {
+  const runLearningTool = async (toolId: string, queryOverride?: string, chatIdOverride?: string) => {
     if (guideLoadingId) return;
+    const query = typeof queryOverride === "string" ? queryOverride : guideInput;
+    const activeGuideChatId = typeof chatIdOverride === "string" ? chatIdOverride : guideChatId;
     setStudentWorkspaceMode("learning");
     setSelectedLearningToolId(toolId);
     setLoadingTask(false);
     setGuideLoadingId(toolId);
     setGuideError("");
-    setGuideResponse("");
     try {
-      const result = await requestLearningGuide(toolId, task.id, guideInput);
+      const result = await requestLearningGuide(toolId, task.id, query, activeGuideChatId);
       setGuideTitle(result.toolTitle ?? "学习辅助");
       setGuideResponse(result.content ?? "Agent 未返回内容。");
+      if (result.chatId) setGuideChatId(result.chatId);
+      if (typeof queryOverride === "string") setGuideFollowupInput("");
     } catch (error) {
       setGuideError(error instanceof Error ? error.message : "学习辅助服务暂时不可用");
     } finally {
       setGuideLoadingId("");
+    }
+  };
+
+  const startNewGuideConversation = () => {
+    setGuideChatId("");
+    setGuideFollowupInput("");
+    setGuideResponse("");
+    setGuideError("");
+    setGuideTitle(selectedLearningTool.title);
+  };
+
+  const resetPracticeHelpConversation = () => {
+    setPracticeHelpChatId("");
+    setPracticeHelpInput("");
+    setPracticeHelpResponse("");
+    setPracticeHelpError("");
+    setPracticeHelpPlacement(null);
+  };
+
+  const runPracticeHelp = async (afterEvaluation = false) => {
+    const userQuestion = practiceHelpInput.trim();
+    if (!userQuestion || practiceHelpLoading) return;
+
+    setPracticeHelpLoading(true);
+    setPracticeHelpError("");
+
+    const taskContext = cleanQuestionRequirements(question).slice(0, 2600);
+    const draft = answer.trim().slice(0, 1200);
+
+    const beforeSubmitGuard = [
+      "【当前阶段：正式提交前实训辅导】",
+      "你是岗位实训助教，只能帮助理解任务、规则、标签边界、字段格式、证据定位和解题思路。",
+      "严禁直接给出当前这道正式题的标准答案、完整标签集合、完整JSON、完整框坐标、完整时间区间或可直接复制提交的最终答案。",
+      "如果学生要求你直接报答案，请改为说明判断方法、检查步骤或给一个不同素材的相似示例。",
+      "可以指出学生当前草稿中应检查的方向，但不要替学生完成本题。",
+    ].join("\n");
+
+    const afterSubmitContext = evaluation
+      ? [
+          "【当前阶段：评分后的错误复盘】",
+          `本次得分：${evaluation.score ?? "—"}；等级：${evaluation.level}`,
+          `评分摘要：${evaluation.summary}`,
+          `问题定位：${evaluation.improvements.join("；") || "暂无"}`,
+          `遗漏/薄弱项：${evaluation.missingPoints.join("；") || "暂无"}`,
+          evaluation.analysis?.errorAnalysis ? `错误分析：${evaluation.analysis.errorAnalysis}` : "",
+          evaluation.analysis?.scoringExplanation ? `评分说明：${evaluation.analysis.scoringExplanation}` : "",
+          "此阶段可以解释本题评分原因、错误类型、边界和改进方法；不得自行改分。",
+        ].filter(Boolean).join("\n")
+      : "";
+
+    const query = [
+      "【MVP当前正式实训上下文】",
+      `任务类别：${task.title}`,
+      agentQuestionId ? `题目编号：${agentQuestionId}` : "",
+      `题目内容：${taskContext}`,
+      !afterEvaluation && draft ? `学生当前草稿：${draft}` : "",
+      afterEvaluation ? afterSubmitContext : beforeSubmitGuard,
+      "",
+      `【学生追问】${userQuestion}`,
+      "",
+      "请直接回答学生本轮问题，保持职业教育实训教师口吻。若有必要，可在结尾提示一个下一步自检动作。",
+    ].filter(Boolean).join("\n");
+
+    try {
+      const result = await requestLearningGuide("free-guide", task.id, query, practiceHelpChatId);
+      setPracticeHelpResponse(result.content ?? "Agent 未返回实训辅导内容。");
+      if (result.chatId) setPracticeHelpChatId(result.chatId);
+      setPracticeHelpInput("");
+    } catch (error) {
+      setPracticeHelpError(error instanceof Error ? error.message : "实训辅导服务暂时不可用");
+    } finally {
+      setPracticeHelpLoading(false);
     }
   };
 
@@ -750,6 +1017,8 @@ export function LearningStudio() {
     setSelectedLearningToolId(toolId);
     setLoadingTask(false);
     setEvaluation(null);
+    setGuideChatId("");
+    setGuideFollowupInput("");
     setResultNotice("");
     setGuideError("");
     const tool = LEARNING_TOOLS.find((item) => item.id === toolId);
@@ -758,7 +1027,7 @@ export function LearningStudio() {
       setGuideResponse("");
       return;
     }
-    void runLearningTool(toolId);
+    void runLearningTool(toolId, undefined, "");
   };
 
   useEffect(() => {
@@ -775,6 +1044,8 @@ export function LearningStudio() {
       setStudentWorkspaceMode("learning");
       setSelectedLearningToolId("start-teaching");
       setGuideInput("");
+      setGuideFollowupInput("");
+      setGuideChatId("");
       setGuideResponse("");
       setGuideTitle("开始教学");
       setGuideError("");
@@ -1000,15 +1271,35 @@ export function LearningStudio() {
               <span className="role-menu-label">选择学生端</span>
               <div className="role-menu-students">
                 {students.map((profile) => (
-                  <button className={profile.id === activeStudentId ? "role-menu-student selected" : "role-menu-student"} key={profile.id} onClick={() => switchStudent(profile.id)}>
+                  <button
+                    className={profile.id === activeStudentId ? "role-menu-student selected" : "role-menu-student"}
+                    key={profile.id}
+                    onClick={() => {
+                      switchStudent(profile.id);
+                      setRole("student");
+                      setEntryStep("app");
+                      setStudentWorkspaceMode("learning");
+                      setSelectedLearningToolId("start-teaching");
+                      setGuideInput("");
+                      setGuideFollowupInput("");
+                      setGuideChatId("");
+                      setGuideResponse("");
+                      setGuideTitle("开始教学");
+                      setGuideError("");
+                      setLoadingTask(false);
+                    }}
+                  >
                     <b>{profile.name[0]}</b>
-                    <div><strong>{profile.name}</strong><small>{records.filter((record) => record.studentId === profile.id || (!record.studentId && (record.studentName?.trim() || DEFAULT_STUDENTS[0].name) === profile.name)).length} 条训练记录</small></div>
+                    <div>
+                      <strong>{profile.name}</strong>
+                      <small>{records.filter((record) => record.studentId === profile.id || (!record.studentId && (record.studentName?.trim() || DEFAULT_STUDENTS[0].name) === profile.name)).length} 条训练记录 · 点击进入学生端</small>
+                    </div>
                   </button>
                 ))}
               </div>
               <div className="role-menu-add-student">
-                <input value={newStudentName} onChange={(event) => setNewStudentName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") addStudent(); }} placeholder="添加学生姓名" maxLength={12} />
-                <button onClick={addStudent} disabled={!newStudentName.trim()}>添加</button>
+                <input value={newStudentName} onChange={(event) => setNewStudentName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") createStudent(true); }} placeholder="添加学生姓名" maxLength={12} />
+                <button onClick={() => createStudent(true)} disabled={!newStudentName.trim()}>添加并进入</button>
               </div>
               <span className="role-menu-label">切换身份端</span>
               <button className={role === "student" ? "selected" : ""} onClick={() => switchRole("student")}><b>{studentName.trim()[0] || "生"}</b><div><strong>学生端</strong><small>答题与查看我的结果</small></div></button>
@@ -1182,7 +1473,7 @@ export function LearningStudio() {
                   <div className={`guide-response learning-guide-response ${guideLoadingId ? "loading" : ""}`} aria-live="polite">
                     <div className="guide-response-heading">
                       <div><span>LEARNING GUIDE</span><strong>{guideTitle || selectedLearningTool.title}</strong></div>
-                      {guideResponse && <button onClick={() => runLearningTool(selectedLearningTool.id)} disabled={Boolean(guideLoadingId)}>重新生成</button>}
+                      {guideResponse && <button onClick={() => runLearningTool(selectedLearningTool.id, guideInput, "")} disabled={Boolean(guideLoadingId)}>重新生成</button>}
                     </div>
                     {guideLoadingId ? (
                       <div className="guide-loading-state" role="status" aria-live="polite">
@@ -1193,7 +1484,7 @@ export function LearningStudio() {
                         <p>正在结合课程路线、当前题型和你的补充问题生成教学说明，请稍候。</p>
                       </div>
                     ) : guideResponse ? (
-                      <pre>{cleanQuestionRequirements(guideResponse)}</pre>
+                      <LinkifiedGuideText value={guideResponse} />
                     ) : (
                       <div className="guide-empty-state">
                         <b>先学会怎么做，再开始做题</b>
@@ -1201,6 +1492,36 @@ export function LearningStudio() {
                       </div>
                     )}
                   </div>
+
+                  {guideResponse && !guideLoadingId && (
+                    <div className="guide-followup-panel">
+                      <div className="guide-followup-heading">
+                        <div>
+                          <span>CONTINUE</span>
+                          <strong>可继续追问 · 保留最近 3 轮上下文</strong>
+                          <p>可以直接追问“为什么？”“那边界呢？”，也可以询问“这个规则的官方依据是什么？”“有没有相关教程或视频？”。</p>
+                        </div>
+                        <button type="button" onClick={startNewGuideConversation}>新建教学会话</button>
+                      </div>
+                      <textarea
+                        className="guide-followup-input"
+                        value={guideFollowupInput}
+                        onChange={(event) => setGuideFollowupInput(event.target.value)}
+                        placeholder="继续追问，例如：那这个实体为什么不是地点？目标被遮挡时边界怎么画？给我这个规则的官方链接和视频教程。"
+                        maxLength={2000}
+                      />
+                      <div className="guide-followup-actions">
+                        <span>{guideChatId ? "当前教学会话已建立，可连续追问。" : "发送后将建立连续教学会话。"}</span>
+                        <button
+                          type="button"
+                          onClick={() => runLearningTool(selectedLearningTool.id, guideFollowupInput.trim())}
+                          disabled={Boolean(guideLoadingId) || !guideFollowupInput.trim()}
+                        >
+                          继续追问 <b>→</b>
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </section>
               ) : (
                 <section className="answer-panel panel">
@@ -1230,11 +1551,67 @@ export function LearningStudio() {
                     {taskWarning && <div className="hint">{taskWarning}</div>}
                     <div className="question-actions">
                       <button onClick={() => setShowHint(!showHint)} aria-expanded={showHint}><b>?</b>{showHint ? "收起提示" : "需要一点提示"}</button>
+                      <button
+                        className="practice-help-toggle-button"
+                        type="button"
+                        onClick={() => setPracticeHelpPlacement(practiceHelpPlacement === "question" ? null : "question")}
+                        disabled={loadingTask || !question}
+                      >
+                        <b>✦</b>{practiceHelpPlacement === "question" ? "收起 Agent 辅导" : "问一问 Agent"}
+                      </button>
                       <button className="agent-generate-button" onClick={generateAgentQuestion} disabled={loadingTask}>
                         <b>✦</b>{loadingTask ? "Agent 正在生成…" : "Agent 生成新题"}
                       </button>
                     </div>
                     {showHint && <div className="hint">{task.hint}</div>}
+
+                    {practiceHelpPlacement === "question" && (
+                      <div className="practice-help-panel practice-help-before-submit">
+                        <div className="practice-help-head">
+                          <div>
+                            <span>AI PRACTICE COACH</span>
+                            <strong>实训中遇到问题？可以问 Agent</strong>
+                            <p>可询问规则、标签边界、格式要求、证据定位或题目理解。正式提交前只提供思路与检查方法，不直接泄露本题标准答案。</p>
+                          </div>
+                          <button type="button" onClick={resetPracticeHelpConversation}>清空本题辅导</button>
+                        </div>
+
+                        {practiceHelpResponse && (
+                          <div className="practice-help-response">
+                            <span>✦ AI生成内容 · 当前题辅导</span>
+                            <LinkifiedGuideText value={practiceHelpResponse} />
+                          </div>
+                        )}
+
+                        {practiceHelpLoading && (
+                          <div className="practice-help-loading" role="status" aria-live="polite">
+                            <strong>Agent 正在结合当前题目生成辅导</strong>
+                            <div><i /></div>
+                            <p>正在分析任务类型、规则和你的问题；不会替你直接提交本题答案。</p>
+                          </div>
+                        )}
+
+                        {practiceHelpError && <div className="guide-error">{practiceHelpError}</div>}
+
+                        <textarea
+                          className="practice-help-input"
+                          value={practiceHelpInput}
+                          onChange={(event) => setPracticeHelpInput(event.target.value)}
+                          placeholder="例如：这个实体边界应该怎么判断？这里为什么可能属于机构名？这个 JSON 格式哪里需要检查？"
+                          maxLength={1200}
+                        />
+                        <div className="practice-help-actions">
+                          <span>{practiceHelpChatId ? "本题辅导会话已建立，可连续追问最近 3 轮。" : "首次发送后建立本题独立辅导会话。"}</span>
+                          <button
+                            type="button"
+                            onClick={() => runPracticeHelp(false)}
+                            disabled={practiceHelpLoading || !practiceHelpInput.trim()}
+                          >
+                            继续提问 <b>→</b>
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <label className="student-name-field" htmlFor="student-name">
@@ -1289,6 +1666,68 @@ export function LearningStudio() {
                   </>
                 )}
                 {evaluation.warning && <div className="agent-warning">接口提示：{evaluation.warning}</div>}
+
+                <section className="result-practice-help-card">
+                  <div>
+                    <span>CONTINUE REVIEW</span>
+                    <strong>对本次评分有疑问？继续问 Agent</strong>
+                    <p>可以追问“为什么这里算漏标？”“这个边界为什么错？”“下一题我应该重点检查什么？”。评分已经确定，Agent 只解释评分依据与改进方法，不自行改分。</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPracticeHelpPlacement(practiceHelpPlacement === "result" ? null : "result")}
+                  >
+                    {practiceHelpPlacement === "result" ? "收起评分追问" : "解释本次评分"} <b>→</b>
+                  </button>
+                </section>
+
+                {practiceHelpPlacement === "result" && (
+                  <div className="practice-help-panel practice-help-after-score">
+                    <div className="practice-help-head">
+                      <div>
+                        <span>AI REVIEW COACH</span>
+                        <strong>评分结果连续追问</strong>
+                        <p>{practiceHelpChatId ? "沿用本题之前的辅导会话，可继续承接上下文。" : "将针对本次成绩、错误类型和改进建议建立独立追问会话。"}</p>
+                      </div>
+                      <button type="button" onClick={resetPracticeHelpConversation}>清空本题辅导</button>
+                    </div>
+
+                    {practiceHelpResponse && (
+                      <div className="practice-help-response">
+                        <span>✦ AI生成内容 · 评分解释</span>
+                        <LinkifiedGuideText value={practiceHelpResponse} />
+                      </div>
+                    )}
+
+                    {practiceHelpLoading && (
+                      <div className="practice-help-loading" role="status" aria-live="polite">
+                        <strong>Agent 正在解释本次评分</strong>
+                        <div><i /></div>
+                        <p>正在结合本题得分、错误类型和评分说明生成复盘建议。</p>
+                      </div>
+                    )}
+
+                    {practiceHelpError && <div className="guide-error">{practiceHelpError}</div>}
+
+                    <textarea
+                      className="practice-help-input"
+                      value={practiceHelpInput}
+                      onChange={(event) => setPracticeHelpInput(event.target.value)}
+                      placeholder="例如：为什么这里算漏标？这项为什么扣分？下一道同类题提交前我应该重点检查什么？"
+                      maxLength={1200}
+                    />
+                    <div className="practice-help-actions">
+                      <span>{practiceHelpChatId ? "本题追问会话已建立，可连续追问最近 3 轮。" : "发送后建立本题评分解释会话。"}</span>
+                      <button
+                        type="button"
+                        onClick={() => runPracticeHelp(true)}
+                        disabled={practiceHelpLoading || !practiceHelpInput.trim()}
+                      >
+                        继续追问 <b>→</b>
+                      </button>
+                    </div>
+                  </div>
+                )}
               </section>
             )}
           </div>
@@ -1324,7 +1763,15 @@ export function LearningStudio() {
                     <article className="teacher-student-item" key={profile.id}>
                       <b>{profile.name[0]}</b>
                       <div><strong>{profile.name}</strong><small>{profile.studentNo || "未填写学号"}{profile.className ? ` · ${profile.className}` : ""} · {count} 条训练记录</small></div>
-                      <button onClick={() => deleteStudent(profile.id)}>删除学生</button>
+                      <div className="teacher-student-actions">
+                        <button className="diagnose-student" onClick={() => {
+                          setTeacherScopeStudentId(profile.id);
+                          setTeacherInsight("records");
+                          const first = records.find((record) => record.studentId === profile.id || (!record.studentId && (record.studentName?.trim() || DEFAULT_STUDENTS[0].name) === profile.name));
+                          setSelectedRecordId(first?.id ?? "");
+                        }}>个体诊断</button>
+                        <button className="delete-student" onClick={() => deleteStudent(profile.id)}>删除</button>
+                      </div>
                     </article>
                   );
                 })}
@@ -1332,17 +1779,76 @@ export function LearningStudio() {
               </div>
             </section>
 
+            <section className="panel teacher-scope-panel">
+              <div className="panel-heading">
+                <div><span className="step">VIEW</span><div><h3>诊断范围</h3><p>在全班共性诊断与学生个体诊断之间切换</p></div></div>
+                <span className="completion">{teacherScopeStudent ? `学生个体诊断 · ${teacherScopeStudent.name}` : "全班共性诊断"}</span>
+              </div>
+              <div className="teacher-scope-buttons">
+                <button
+                  className={teacherScopeStudentId === "all" ? "selected" : ""}
+                  onClick={() => {
+                    setTeacherScopeStudentId("all");
+                    setSelectedRecordId(records[0]?.id ?? "");
+                  }}
+                >
+                  <b>全</b><span><strong>全班综合</strong><small>{records.length} 条训练记录 · 查看共性问题</small></span>
+                </button>
+                {students.map((profile) => {
+                  const count = records.filter((record) => record.studentId === profile.id || (!record.studentId && (record.studentName?.trim() || DEFAULT_STUDENTS[0].name) === profile.name)).length;
+                  return (
+                    <button
+                      key={profile.id}
+                      className={teacherScopeStudentId === profile.id ? "selected" : ""}
+                      onClick={() => {
+                        setTeacherScopeStudentId(profile.id);
+                        const first = records.find((record) => record.studentId === profile.id || (!record.studentId && (record.studentName?.trim() || DEFAULT_STUDENTS[0].name) === profile.name));
+                        setSelectedRecordId(first?.id ?? "");
+                      }}
+                    >
+                      <b>{profile.name[0]}</b><span><strong>{profile.name}</strong><small>{count} 条 · 查看个体画像</small></span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+
+            {teacherScopeStudent && teacherDiagnosis && (
+              <section className="panel individual-diagnosis-panel">
+                <div className="panel-heading">
+                  <div><span className="step">IND</span><div><h3>{teacherScopeStudent.name} · 个体学习评价</h3><p>仅基于该学生自己的训练记录计算</p></div></div>
+                  <span className="completion">{teacherDiagnosis.level}</span>
+                </div>
+                <div className="individual-diagnosis-summary">
+                  <div className="individual-score-card">
+                    <span>平均分</span>
+                    <strong>{teacherMetrics.average}</strong>
+                    <small>{teacherMetrics.total} 次训练 · ≥80 分通过率 {teacherMetrics.passRate}%</small>
+                  </div>
+                  <div className="individual-summary-copy">
+                    <strong>{teacherDiagnosis.summary}</strong>
+                    <div className="individual-facts">
+                      <span><b>主要错误</b>{teacherDiagnosis.topError}</span>
+                      <span><b>重点薄弱项</b>{teacherDiagnosis.topWeakness}</span>
+                      <span><b>当前弱项任务</b>{teacherDiagnosis.weakestTask}</span>
+                      <span><b>近期趋势</b>{teacherDiagnosis.trend}</span>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            )}
+
             <div className="stats-grid clickable-stats">
-              <StatCard label="训练记录" value={`${metrics.total} 次`} note="点击查看学生作答" tone="violet" active={teacherInsight === "records"} onClick={() => setTeacherInsight("records")} />
-              <StatCard label="常见错误类型" value={`${errorStats.filter((item) => item.count > 0).length} 类`} note="点击查看错误分布" tone="rose" active={teacherInsight === "errors"} onClick={() => setTeacherInsight("errors")} />
-              <StatCard label="学生薄弱知识点" value={`${weaknessStats.length} 项`} note="点击查看薄弱项" tone="amber" active={teacherInsight === "weakness"} onClick={() => setTeacherInsight("weakness")} />
-              <StatCard label="后续教学建议" value={`${Math.max(2, weaknessStats.length)} 条`} note="点击查看教学行动" tone="mint" active={teacherInsight === "advice"} onClick={() => setTeacherInsight("advice")} />
+              <StatCard label="训练记录" value={`${teacherMetrics.total} 次`} note={`${teacherScopeStudent ? teacherScopeStudent.name : "全班"} · 平均 ${teacherMetrics.average} 分 · ≥80 通过率 ${teacherMetrics.passRate}%`} tone="violet" active={teacherInsight === "records"} onClick={() => setTeacherInsight("records")} />
+              <StatCard label="常见错误类型" value={`${errorStats.filter((item) => item.count > 0).length} 类`} note={teacherScopeStudent ? "该学生错误分布" : "全班共性错误分布"} tone="rose" active={teacherInsight === "errors"} onClick={() => setTeacherInsight("errors")} />
+              <StatCard label="学生薄弱知识点" value={`${weaknessStats.length} 项`} note={teacherScopeStudent ? "该学生薄弱项" : "全班共性薄弱项"} tone="amber" active={teacherInsight === "weakness"} onClick={() => setTeacherInsight("weakness")} />
+              <StatCard label="后续教学建议" value={`${teacherScopeStudent && teacherDiagnosis ? teacherDiagnosis.actions.length : Math.max(2, weaknessStats.length)} 条`} note={teacherScopeStudent ? "个体教学建议" : "班级教学建议"} tone="mint" active={teacherInsight === "advice"} onClick={() => setTeacherInsight("advice")} />
             </div>
 
             {teacherInsight === "records" && (
               <div className="result-library teacher-records">
                 <section className="panel record-browser">
-                  <div className="panel-heading"><div><span className="step">A</span><div><h3>全部训练记录</h3><p>选择一条查看学生答案和完整结果</p></div></div><span className="completion">平均 {metrics.average} 分</span></div>
+                  <div className="panel-heading"><div><span className="step">A</span><div><h3>{teacherScopeStudent ? `${teacherScopeStudent.name}的训练记录` : "全部训练记录"}</h3><p>选择一条查看学生答案和完整结果</p></div></div><span className="completion">平均 {teacherMetrics.average} 分</span></div>
                   <div className="student-record-groups">
                     {studentRecordGroups.map((group, index) => (
                       <details className="student-record-group" key={group.id} defaultOpen={index === 0 || group.records.some((record) => record.id === selectedRecordId)}>
@@ -1364,25 +1870,25 @@ export function LearningStudio() {
                     {!studentRecordGroups.length && <div className="empty-state">暂无学生训练记录。</div>}
                   </div>
                 </section>
-                <section className="panel record-detail-panel">{renderRecordDetail(selectedRecord)}</section>
+                <section className="panel record-detail-panel">{renderRecordDetail(teacherSelectedRecord)}</section>
               </div>
             )}
 
             {teacherInsight === "errors" && (
               <section className="panel visual-panel">
-                <div className="panel-heading"><div><span className="step">B</span><div><h3>常见错误类型分布</h3><p>按训练记录统计出现频次</p></div></div></div>
+                <div className="panel-heading"><div><span className="step">B</span><div><h3>{teacherScopeStudent ? `${teacherScopeStudent.name}的错误类型分布` : "全班共性错误类型分布"}</h3><p>按当前诊断范围的训练记录统计出现频次</p></div></div></div>
                 <div className="bar-chart">
                   {errorStats.map((item) => (
                     <div key={item.label}><span>{item.label}</span><div><i style={{ width: `${Math.max(8, (item.count / maxErrorCount) * 100)}%` }}></i></div><b>{item.count} 次</b></div>
                   ))}
                 </div>
-                <div className="diagnosis-card"><strong>教学诊断</strong><p>优先处理高频的漏标、实体类别混淆和提交格式问题；建议使用同一句文本做“错误答案—修正答案”对照训练。</p></div>
+                <div className="diagnosis-card"><strong>{teacherScopeStudent ? "学生个体诊断" : "班级共性诊断"}</strong><p>{teacherScopeStudent && teacherDiagnosis ? `${teacherDiagnosis.summary} 当前优先关注：${teacherDiagnosis.topError}。` : `当前全班高频问题为“${[...errorStats].filter((item) => item.count > 0).sort((a, b) => b.count - a.count)[0]?.label ?? "暂无集中错误"}”，可据此安排集中讲评与分层复练。`}</p></div>
               </section>
             )}
 
             {teacherInsight === "weakness" && (
               <section className="panel visual-panel">
-                <div className="panel-heading"><div><span className="step">C</span><div><h3>学生薄弱知识点</h3><p>从每次结果的遗漏项自动汇总</p></div></div></div>
+                <div className="panel-heading"><div><span className="step">C</span><div><h3>{teacherScopeStudent ? `${teacherScopeStudent.name}的薄弱知识点` : "全班共性薄弱知识点"}</h3><p>从当前诊断范围的错误与遗漏项自动汇总</p></div></div></div>
                 <div className="weakness-grid">
                   {weaknessStats.length ? weaknessStats.map((item, index) => (
                     <article key={item.label}><span>0{index + 1}</span><div><strong>{item.label}</strong><div className="mini-bar"><i style={{ width: `${Math.max(12, (item.count / maxWeaknessCount) * 100)}%` }}></i></div><small>在 {item.count} 条记录中出现</small></div></article>
@@ -1393,12 +1899,20 @@ export function LearningStudio() {
 
             {teacherInsight === "advice" && (
               <section className="panel visual-panel">
-                <div className="panel-heading"><div><span className="step">D</span><div><h3>后续教学建议</h3><p>将诊断结果转成可执行教学行动</p></div></div></div>
+                <div className="panel-heading"><div><span className="step">D</span><div><h3>{teacherScopeStudent ? `${teacherScopeStudent.name}的个体教学建议` : "全班后续教学建议"}</h3><p>将当前诊断范围的结果转成可执行教学行动</p></div></div></div>
                 <div className="advice-timeline">
-                  <article><b>01</b><div><strong>先做规则校准</strong><p>用 5 分钟对比例讲清组织机构、活动名称、时间和地点的类别边界。</p></div></article>
-                  <article><b>02</b><div><strong>再做逐项检查</strong><p>要求学生提交前按“圈实体—判类别—查边界—查漏标”的顺序自检。</p></div></article>
-                  <article><b>03</b><div><strong>安排针对性重练</strong><p>围绕“{weaknessStats[0]?.label ?? "实体边界与提交格式"}”指导学生使用 Agent 生成同类型新题，并在下一次训练中复测。</p></div></article>
-                  <article><b>04</b><div><strong>用结果验证改进</strong><p>对比学生重练前后的得分、错误类型数量和薄弱知识点变化。</p></div></article>
+                  {teacherScopeStudent && teacherDiagnosis ? (
+                    teacherDiagnosis.actions.map((item, index) => (
+                      <article key={`${index}-${item}`}><b>{String(index + 1).padStart(2, "0")}</b><div><strong>{index === 0 ? "优先补强" : index === 1 ? "规范提交" : index === 2 ? "针对性复练" : "阶段推进"}</strong><p>{item}</p></div></article>
+                    ))
+                  ) : (
+                    <>
+                      <article><b>01</b><div><strong>聚焦班级共性错误</strong><p>围绕“{[...errorStats].filter((item) => item.count > 0).sort((a, b) => b.count - a.count)[0]?.label ?? "当前需要巩固的知识点"}”组织集中讲评，并展示错误答案与标准答案对照。</p></div></article>
+                      <article><b>02</b><div><strong>安排分层复练</strong><p>薄弱知识点集中的学生优先完成同类巩固题，已达标学生进入相邻任务类别。</p></div></article>
+                      <article><b>03</b><div><strong>查看学生个体画像</strong><p>通过上方“诊断范围”切换到具体学生，查看该学生平均分、主要错误、薄弱项、弱项任务和近期趋势。</p></div></article>
+                      <article><b>04</b><div><strong>验证教学效果</strong><p>比较讲评前后的平均分、通过率和高频错误变化，调整下一轮训练重点。</p></div></article>
+                    </>
+                  )}
                 </div>
               </section>
             )}
