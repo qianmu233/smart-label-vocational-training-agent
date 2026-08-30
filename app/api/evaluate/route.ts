@@ -27,15 +27,32 @@ function evaluationFromStructured(evaluation: AgentEvaluation, content: string, 
   const score = typeof evaluation.score === "number"
     ? Math.min(100, Math.max(0, evaluation.score))
     : null;
+
+  /*
+   * 不同任务的确定性评分器返回字段并不完全一致：
+   * - NER / OCR Layout 等会返回 correct / missing / extra / type_confusion；
+   * - 新闻、情感、意图、风险等分类任务通常主要返回 error_type / error_message。
+   *
+   * 这里统一兼容两类结构，避免“已经判低分/0分，但教师端没有错误类型或薄弱项”的情况。
+   */
+  const extendedEvaluation = evaluation as AgentEvaluation & {
+    error_type?: unknown;
+    error_message?: unknown;
+    standard_answer?: unknown;
+  };
+
   const correct = (evaluation.correct ?? [])
     .map((item) => `${item.entity ?? ""}${item.label ? `：${item.label}` : ""}`.trim())
     .filter(Boolean);
+
   const missing = (evaluation.missing ?? [])
     .map((item) => `漏标：${item.entity ?? ""}${item.correct_label ? `：${item.correct_label}` : ""}`.trim())
     .filter(Boolean);
+
   const extra = (evaluation.extra ?? [])
     .map((item) => `多标：${item.entity ?? ""}${item.student_label ? `：${item.student_label}` : ""}`.trim())
     .filter(Boolean);
+
   const typeConfusion = (evaluation.type_confusion ?? [])
     .map((item) => {
       const entity = String(item.entity ?? item.text ?? "").trim();
@@ -44,67 +61,251 @@ function evaluationFromStructured(evaluation: AgentEvaluation, content: string, 
       return `类别错误：${entity}${actual || expected ? `（${actual || "?"}→${expected || "?"}）` : ""}`;
     })
     .filter((item) => item !== "类别错误：");
-  const problems = [...missing, ...extra, ...typeConfusion];
+
+  const structuredProblems = [...missing, ...extra, ...typeConfusion];
+
+  const isNoProblemText = (value: string) =>
+    /^(?:无|暂无|无错误|无明显问题|未发现明显问题|未发现错误|答案完全正确|全部正确)[。！!]?$/.test(value.trim());
+
+  const classifyProblem = (value: string) => {
+    const text = value.trim();
+    if (!text || isNoProblemText(text)) return "";
+
+    if (/^(?:漏标|多标|多标或误标|格式问题|边界或类别错误|类别错误|类型错误|标签错误)[：:]/.test(text)) {
+      return text;
+    }
+
+    if (/漏标|遗漏|缺失/.test(text)) {
+      return `漏标：${text}`;
+    }
+
+    if (/多标|误标|冗余/.test(text)) {
+      return `多标或误标：${text}`;
+    }
+
+    if (/格式|JSON|无法解析|解析失败|题目编号|字段数量|字段格式|提交格式/.test(text)) {
+      return `格式问题：${text}`;
+    }
+
+    if (/边界|start_time|end_time|开始时间|结束时间|时间范围|时间段/.test(text)) {
+      return `边界或类别错误：${text}`;
+    }
+
+    if (
+      /分类错误|主题.*错误|情感.*错误|意图.*错误|风险.*错误|类别.*(?:错误|不一致|混淆)|类型.*(?:错误|不一致|混淆)|标签.*(?:错误|不一致|超出|范围)|选择.*(?:错误|不一致)|标准答案不一致/.test(text)
+    ) {
+      return `类别错误：${text}`;
+    }
+
+    return text;
+  };
+
+  const structuredErrorItems = [
+    String(extendedEvaluation.error_type ?? "").trim(),
+    String(extendedEvaluation.error_message ?? "").trim(),
+  ]
+    .filter((item) => item && !isNoProblemText(item))
+    .map(classifyProblem)
+    .filter(Boolean);
+
+  const contentProblemItems = score === 100
+    ? []
+    : agentItems(
+        agentSection(content, ["最需要修改的问题", "问题定位", "错误分析"]),
+      )
+        .filter((item) => item && !isNoProblemText(item))
+        .map(classifyProblem)
+        .filter(Boolean);
+
+  const fallbackProblems = [...new Set([...structuredErrorItems, ...contentProblemItems])];
+
+  /*
+   * NER / OCR 等任务优先使用逐项结构化错误；
+   * 分类等任务没有逐项数组时，再使用 error_type/error_message 和 Agent 复盘文本。
+   */
+  const problems = structuredProblems.length
+    ? structuredProblems
+    : fallbackProblems;
+
+  const fallbackStrengths = agentItems(
+    agentSection(content, ["做对的地方", "正确部分"]),
+  ).filter((item) =>
+    item &&
+    !/^(?:暂无可确认的正确项|暂无|无|暂无正确项)[。！!]?$/.test(item),
+  );
+
+  const visibleCorrect = correct.length
+    ? correct
+    : fallbackStrengths;
+
+  const rawStandardAnswer = extendedEvaluation.standard_answer;
+  const structuredStandardAnswer =
+    typeof rawStandardAnswer === "string"
+      ? rawStandardAnswer.trim()
+      : rawStandardAnswer && typeof rawStandardAnswer === "object"
+        ? JSON.stringify(rawStandardAnswer)
+        : "";
+
   const correctAnswer =
     agentSection(content, ["参考答案", "正确答案"]) ||
-    evaluation.normalized_answer_json ||
-    "Agent 已返回结构化评分结果。";
+    structuredStandardAnswer ||
+    "请查看 Agent 原始完整反馈中的参考答案。";
+
   const scoreText = score === null ? "未提供分数" : `${score}分`;
   const statusText = evaluation.passed ? "通过" : "未通过";
+
   const checks: NonNullable<Evaluation["analysis"]>["answerChecks"] = [
     ...correct.map((item) => ({
       item,
       status: "正确" as const,
-      detail: "与 Agent 返回的标准实体一致。",
+      detail: "与 Agent 返回的标准答案一致。",
     })),
+
     ...missing.map((item) => ({
       item,
       status: "漏标" as const,
       detail: "来自 Agent 结构化评分结果。",
     })),
+
     ...extra.map((item) => ({
       item,
       status: "多标" as const,
       detail: "来自 Agent 结构化评分结果。",
     })),
+
     ...typeConfusion.map((item) => ({
       item,
       status: "错误" as const,
       detail: "来自 Agent 结构化评分结果。",
     })),
+
+    ...(structuredProblems.length
+      ? []
+      : fallbackProblems.map((item) => ({
+          item,
+          status: (
+            /^漏标[：:]/.test(item)
+              ? "漏标"
+              : /^(?:多标|多标或误标)[：:]/.test(item)
+                ? "多标"
+                : "错误"
+          ) as "漏标" | "多标" | "错误",
+          detail: "来自 Agent 确定性评分结果与错误复盘。",
+        }))),
   ];
+
+  const fallbackAdvice = agentItems(
+    agentSection(content, ["怎么修改", "改进建议"]),
+  ).filter(Boolean);
+
+  const strengths = visibleCorrect.length
+    ? visibleCorrect
+    : score === 100
+      ? ["答案与标准答案一致"]
+      : ["已完成本次作答"];
+
+  const improvements = problems.length
+    ? problems
+    : score === 100
+      ? ["保持当前作答规范"]
+      : fallbackAdvice.length
+        ? fallbackAdvice
+        : ["请查看 Agent 原始完整反馈"];
 
   return {
     score,
-    level: score === null ? "Agent 批改结果" : score >= 90 ? "优秀" : score >= 60 ? "通过" : "待完善",
+
+    level:
+      score === null
+        ? "Agent 批改结果"
+        : score >= 90
+          ? "优秀"
+          : score >= 60
+            ? "通过"
+            : "待完善",
+
     summary: `Agent 已完成批改：本次得分${scoreText}，${statusText}。`,
-    strengths: correct.length ? correct : ["Agent 已返回批改结果"],
-    improvements: problems.length ? problems : ["未发现漏标、多标或类别错误"],
+
+    strengths,
+
+    improvements,
+
+    /*
+     * 教师端“重点薄弱项”直接统计 missingPoints，
+     * 因此分类任务的 error_type/error_message 也必须落到这里。
+     */
     missingPoints: problems,
+
     recommendation: {
       title: problems[0] || "按 Agent 建议继续训练",
-      reason: problems[0] || "参考 Agent 返回的结构化评分结果。",
+      reason:
+        problems[0] ||
+        fallbackAdvice[0] ||
+        "参考 Agent 返回的结构化评分结果。",
       action: problems.length ? "修改后重做" : "获取下一道 Agent 题",
     },
+
     source: "agent",
     agentFeedback: content,
+
     analysis: {
       taskDescription: question,
-      answerChecks: checks.length ? checks : [{
-        item: "Agent 批改结果",
-        status: "正确" as const,
-        detail: "Agent 已返回结构化评分结果，请查看评分与原始反馈。",
-      }],
-      errorAnalysis: problems.join("；") || "Agent 未返回错误项。",
+
+      /*
+       * 教师端“常见错误类型”优先读取 answerChecks。
+       * 分类任务没有 missing/extra/type_confusion 时，
+       * 这里使用 fallbackProblems 生成真实错误检查项。
+       */
+      answerChecks:
+        checks.length
+          ? checks
+          : score === 100
+            ? [{
+                item: "本题答案",
+                status: "正确" as const,
+                detail: "答案与标准答案一致。",
+              }]
+            : [{
+                item: "本次评分结果",
+                status: "待改进" as const,
+                detail: "请查看 Agent 原始完整反馈中的具体错误说明。",
+              }],
+
+      errorAnalysis:
+        problems.join("；") ||
+        (score === 100
+          ? "未发现错误。"
+          : "请查看 Agent 原始完整反馈中的具体错误说明。"),
+
       correctAnswer,
-      scoringExplanation: `Agent 结构化评分：${scoreText}。${evaluation.scoring_status ? ` 状态：${evaluation.scoring_status}。` : ""}`,
-      improvementAdvice: problems.length
-        ? ["对照 Agent 返回的漏标、多标或类别错误逐项修正", "修正后按题目要求重新提交"]
-        : ["保持当前实体边界、类别和提交格式"],
+
+      scoringExplanation:
+        `Agent 结构化评分：${scoreText}。${
+          evaluation.scoring_status
+            ? ` 状态：${evaluation.scoring_status}。`
+            : ""
+        }`,
+
+      improvementAdvice:
+        problems.length
+          ? (
+              fallbackAdvice.length
+                ? fallbackAdvice
+                : [
+                    "对照 Agent 返回的问题逐项修正",
+                    "修正后按题目要求重新提交",
+                  ]
+            )
+          : score === 100
+            ? ["保持当前标签、边界、顺序和提交格式"]
+            : (
+                fallbackAdvice.length
+                  ? fallbackAdvice
+                  : ["请结合 Agent 原始反馈完成针对性复练"]
+              ),
     },
   };
 }
-
 function evaluationFromAgent(content: string, question: string, structured?: AgentEvaluation): Evaluation {
   if (structured) return evaluationFromStructured(structured, content, question);
   const result = agentSection(content, ["结果", "评分结果"]);
